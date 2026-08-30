@@ -21,6 +21,7 @@
     "@libsql/client": "0.8.1",
     "@prisma/adapter-libsql": "^7.9.1",
     "@prisma/client": "^7.9.1",
+    "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
     "zod": "^3.23.8"
   },
