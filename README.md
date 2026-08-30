@@ -68,6 +68,10 @@ npm run pipeline -- --no-interactive   # should report 0 new work orders, 0 new 
 
 ### Change-tolerance rehearsal (the hour-7 "surprise file")
 
+Requires `npm run ingest` to have already run at least once (this
+rehearsal ticket file references real vehicles from the resolved
+fleet data, so the entity store must exist first).
+
 `test-fixtures/surprise_tickets.json` is a hand-built stand-in for the
 challenge's differently-formatted surprise file - it mixes a normal
 ticket, a duplicate, a ticket with camelCase-renamed fields
@@ -121,13 +125,13 @@ answer-phrasing step do.
 npm test
 ```
 
-61 tests covering: ticket validation and quarantine logic (including
+67 tests covering: ticket validation and quarantine logic (including
 change-tolerance field-alias recovery), CSV ingestion with duplicate-row
 merging (fleet_master.csv's confirmed duplicate-row pattern), PII
-masking guarantees, registration-format normalization, the LLM
-extraction schema (validated against mocked responses mirroring real
-extracted facts), and one pass/fail pair per dispatcher rule in the
-rules engine.
+masking guarantees, registration-format normalization, jugaad-mention
+detection from resolution notes, the LLM extraction schema (validated
+against mocked responses mirroring real extracted facts), and one
+pass/fail pair per dispatcher rule in the rules engine.
 
 ## Project structure
 
@@ -186,3 +190,30 @@ audit/         generated: audit.jsonl
   requirement rejects several otherwise-eligible vehicles purely on
   model year (confirmed against real tickets.json data - e.g. a 2018
   vehicle on TKT-0014).
+- **Jugaad detection** (`src/pipeline/jugaad-detection.ts`) recognizes
+  the real confirmed phrasing ("...jugaad se chalu kiya, permanent
+  repair pending") in a ticket's resolution_note and populates
+  `Vehicle.jugaadPatchedAt`/`jugaadDeadline`, so the dispatcher's
+  7-day/home-region rule has real data to act on rather than always
+  finding a null field. A deliberately narrow keyword match, not an
+  LLM call - broader free-text parsing would be a different task.
+
+## Known gaps (honest, not hidden)
+
+- `Vehicle.lastServiceDate` and `lastBrakeWorkDate` are always null.
+  This isn't a parsing miss - neither field exists in any structured
+  source file (fleet_master.csv has no service-date column, and no
+  source file records brake-work history). The service-overdue and
+  hill-route-brake-work rules are fully implemented and tested, but
+  never fire against the real dataset because the underlying data
+  doesn't exist in the bundle. Given the 8-hour budget, priority went
+  to the full 7-step pipeline and rules engine over inferring these
+  dates from free text (e.g. "towed to hub workshop" doesn't imply a
+  service date).
+- The query interface's entity matching (`src/query/resolve-context.ts`)
+  is regex/keyword-based, not fuzzy - a misspelled or unusually-phrased
+  client/vehicle reference in a question won't resolve, and the
+  interface correctly falls back to "insufficient data" rather than
+  guessing, which is the safer failure mode given the brief's
+  negative-marking on hallucination.
+
