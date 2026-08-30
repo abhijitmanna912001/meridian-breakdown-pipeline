@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { validateTicket, type Ticket } from "../schemas/ticket.js";
 import { normalizeRegistration, looksLikeValidRegistration } from "../lib/normalize.js";
 import { prisma } from "../lib/db.js";
+import { detectJugaadMention, computeJugaadWindow } from "./jugaad-detection.js";
 
 /**
  * Step 1 (validate) and Step 2 (enrich) of the breakdown-to-resolution
@@ -174,6 +175,28 @@ export async function enrichTicket(ticket: Ticket): Promise<EnrichedTicket> {
     if (!vehicle) {
       gaps.push(`vehicle ${normalizedReg} not found in resolved fleet data`);
     } else {
+      let jugaadPatchedAt = vehicle.jugaadPatchedAt;
+      let jugaadDeadline = vehicle.jugaadDeadline;
+
+      // Detect a jugaad mention on THIS ticket's resolution_note and
+      // persist it, so the dispatcher's 7-day/home-region rule has
+      // real data to act on for future tickets involving this
+      // vehicle, not just an always-null field. Only sets a NEW
+      // window if one isn't already on record and still active —
+      // never overwrites an existing, still-active jugaad window with
+      // a stale/duplicate detection from a re-run.
+      if (detectJugaadMention(ticket.resolution_note) && !jugaadPatchedAt) {
+        const window = computeJugaadWindow(ticket.created_at);
+        if (window) {
+          await prisma.vehicle.update({
+            where: { id: vehicle.id },
+            data: { jugaadPatchedAt: window.patchedAt, jugaadDeadline: window.deadline },
+          });
+          jugaadPatchedAt = window.patchedAt;
+          jugaadDeadline = window.deadline;
+        }
+      }
+
       vehicleRecord = {
         id: vehicle.id,
         registrationNumber: vehicle.registrationNumber,
@@ -183,8 +206,8 @@ export async function enrichTicket(ticket: Ticket): Promise<EnrichedTicket> {
         homeHub: vehicle.homeHub,
         lastServiceDate: vehicle.lastServiceDate,
         lastBrakeWorkDate: vehicle.lastBrakeWorkDate,
-        jugaadPatchedAt: vehicle.jugaadPatchedAt,
-        jugaadDeadline: vehicle.jugaadDeadline,
+        jugaadPatchedAt,
+        jugaadDeadline,
       };
     }
   }
