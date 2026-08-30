@@ -1,0 +1,206 @@
+// Meridian Breakdown Pipeline — Prisma schema (Prisma ORM 7)
+// SQLite: single-file DB, zero setup, trivially provable idempotency
+// (diff/hash the .db file before and after a re-run to prove nothing changed)
+//
+// NOTE (Prisma 7): the connection URL no longer lives here — it's in
+// prisma.config.ts at the project root, and PrismaClient is instantiated
+// with a driver adapter (see src/lib/db.ts). This file only declares
+// the provider and the shape of the data.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ─────────────────────────────────────────────
+// PART A: Entity store (context foundation)
+// ─────────────────────────────────────────────
+
+// One row per real-world vehicle, after resolving the 3+ registration
+// formats seen across fleet_master.csv / meridian_trips.csv / tickets.json
+// into a single canonical identity.
+model Vehicle {
+  id                 String   @id @default(cuid())
+  vehicleId          String   @unique // MF-068 style id from fleet_master, when known
+  registrationNumber String   @unique // canonicalized: no spaces/dashes, uppercase
+  rawRegistrations   String // JSON array of every raw string form seen, for audit
+  model              String?
+  year               Int?
+  bsStage            String? // BS4 / BS6 — drives winter Delhi NCR rule
+  engineHeater       Boolean  @default(false) // required for Rudrapur/hill routes Nov-Feb
+  homeHub            String?
+  capacityTonnes     Float?
+  status             String? // Active / Inactive
+  lastServiceDate    DateTime?
+  lastBrakeWorkDate  DateTime? // null = no recent brake work
+  jugaadPatchedAt    DateTime? // set when a temporary "Guddu ka jugaad" fix is applied
+  jugaadDeadline     DateTime? // jugaadPatchedAt + 7 days; vehicle stays local until fixed
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  tickets    BreakdownTicket[]
+  workOrders WorkOrder[]
+
+  @@index([registrationNumber])
+}
+
+model Driver {
+  id           String   @id @default(cuid())
+  driverId     String   @unique // DRV-001 style id
+  // NOTE: name/phone/DL/Aadhaar are NEVER stored here in raw form.
+  // Only a masked reference is kept; see MaskedFieldMap for the one-way mapping.
+  maskedRef    String   @unique // e.g. "DRV-001::masked"
+  joiningDate  DateTime?
+  homeHub      String?
+  isNewDriver  Boolean  @default(false) // <6 months tenure — no solo night runs
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tickets BreakdownTicket[]
+
+  @@index([driverId])
+}
+
+model Client {
+  id                String   @id @default(cuid())
+  canonicalName     String   @unique // e.g. "Shakti Cement" — resolved from name variants
+  nameVariants      String // JSON array of raw name strings seen across sources
+  contractSlaHours  Float? // the *paper* SLA, e.g. Shakti's contract says 48
+  effectiveSlaHours Float? // the *real* operating rule, e.g. Shakti is actually 36
+  slaSourceNote     String? // citation: which rule/interview line this came from
+  specialRules      String? // JSON array of {rule, sourceCitation}
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tickets BreakdownTicket[]
+}
+
+// A single resolved fact plus its citation and precedence reasoning.
+// Used by the query interface to answer "insufficient data" honestly
+// and to justify every conflict-resolution decision.
+model ResolvedFact {
+  id             String   @id @default(cuid())
+  entityType     String // "Vehicle" | "Driver" | "Client" | "Trip"
+  entityId       String // FK-ish reference to the resolved entity
+  fieldName      String // e.g. "effectiveSlaHours"
+  value          String // stored as string, parsed by consumer
+  sourceFile     String // e.g. "dispatcher_interview.txt"
+  sourceLocator  String? // e.g. line range or thread filename
+  conflictsWith  String? // JSON array of other raw values seen, if any
+  precedenceRule String? // why this source won over others, if a conflict existed
+  createdAt      DateTime @default(now())
+
+  @@index([entityType, entityId, fieldName])
+}
+
+// One-way, non-reversible mapping used only to keep masking consistent
+// (same real phone -> same masked token every time) without ever storing
+// the raw value once ingestion is done. Raw values live only transiently
+// in memory during ingestion and are never persisted.
+model MaskedFieldMap {
+  id          String   @id @default(cuid())
+  fieldType   String // "phone" | "dl_number" | "aadhaar"
+  hashOfRaw   String   @unique // SHA-256 of raw value, one-way, never the raw value itself
+  maskedToken String   @unique // e.g. "PHONE-7f3a9c"
+  createdAt   DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────
+// PART B: Automation pipeline
+// ─────────────────────────────────────────────
+
+model BreakdownTicket {
+  id              String   @id @default(cuid())
+  ticketId        String   @unique // TKT-0027 — the raw ticket id from tickets.json
+  // NOTE: @unique here is what makes duplicate ticket ids collapse to one row.
+  // A second occurrence of the same ticket_id is an idempotent no-op, not a new record.
+  status          String // RECEIVED | QUARANTINED | PROCESSED
+  rawPayload      String // original JSON, for audit / reprocessing the surprise file
+  createdAtSource DateTime? // created_at from the ticket itself
+  ingestedAt      DateTime @default(now())
+
+  vehicleId String?
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
+  driverId  String?
+  driver    Driver?  @relation(fields: [driverId], references: [id])
+  clientId  String?
+  client    Client?  @relation(fields: [clientId], references: [id])
+
+  severity         String? // classified severity, may differ from raw ticket severity
+  quarantineReason String? // null unless status = QUARANTINED
+
+  workOrder     WorkOrder?
+  clientMessage ClientMessage?
+  auditEvents   AuditEvent[]
+
+  @@index([status])
+}
+
+// Exactly one work order per unique valid ticket, enforced by the
+// unique constraint on ticketId — this IS the idempotency guarantee
+// for Step 5, not just application logic that could be bypassed.
+model WorkOrder {
+  id             String          @id @default(cuid())
+  workOrderId    String          @unique
+  ticketId       String          @unique // enforces "exactly one per ticket" at the DB level
+  ticket         BreakdownTicket @relation(fields: [ticketId], references: [ticketId])
+  vehicleRegUsed String // the replacement vehicle assigned
+  vehicleId      String?
+  vehicle        Vehicle?        @relation(fields: [vehicleId], references: [id])
+  citations      String // JSON array of {rule, source} justifying the selection
+  createdAt      DateTime        @default(now())
+}
+
+// Drafted messages awaiting human approval (comms_pending.jsonl mirror),
+// and the approval outcome once a human acts (comms_sent.jsonl mirror).
+// Exactly one row per ticket — a re-run must not re-draft or re-send.
+model ClientMessage {
+  id         String          @id @default(cuid())
+  messageId  String          @unique
+  ticketId   String          @unique
+  ticket     BreakdownTicket @relation(fields: [ticketId], references: [ticketId])
+  recipient  String // masked/generic recipient reference, never raw contact info
+  body       String // must be verified free of raw personal data before persisting
+  citations  String // JSON array — context shown to the human approver
+  status     String // PENDING | APPROVED | REJECTED
+  approvedBy String?
+  sentAt     DateTime?
+  createdAt  DateTime        @default(now())
+}
+
+// One row per decision, per step, per ticket — the audit trail the
+// brief requires ("what was decided, on what data, under which rule").
+model AuditEvent {
+  id         String          @id @default(cuid())
+  ticketId   String
+  ticket     BreakdownTicket @relation(fields: [ticketId], references: [ticketId])
+  step       String // VALIDATE | ENRICH | CLASSIFY | SELECT_VEHICLE | WORK_ORDER | DRAFT_MESSAGE | SEND
+  decision   String // human-readable summary of what was decided
+  ruleCited  String? // which dispatcher rule / precedence rule applied, if any
+  sourceData String? // JSON snapshot of the data the decision was based on
+  actor      String // "system" | "human:<name>"
+  createdAt  DateTime        @default(now())
+
+  @@index([ticketId, step])
+}
+
+// Tracks each raw ticket-queue file processed (main queue + the hour-7
+// surprise file) so a full pipeline re-run over the same file is
+// detectable and produces identical output rather than reprocessing
+// from scratch in a way that could diverge.
+model IngestionRun {
+  id              String    @id @default(cuid())
+  sourceFile      String
+  fileHash        String // hash of the file content — same file + same hash = safe to no-op
+  ticketCount     Int
+  duplicateCount  Int
+  quarantineCount Int
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+
+  @@unique([sourceFile, fileHash])
+}
