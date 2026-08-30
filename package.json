@@ -6,12 +6,13 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "ingest": "tsx src/ingest/run.ts",
     "pipeline": "tsx src/pipeline/run.ts",
     "query": "tsx src/query/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev --name init",
+    "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset --force",
     "db:studio": "prisma studio",
     "setup": "npm install && npm run db:generate && npm run db:migrate"

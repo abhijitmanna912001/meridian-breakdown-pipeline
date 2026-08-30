@@ -44,6 +44,7 @@ model Vehicle {
 
   tickets    BreakdownTicket[]
   workOrders WorkOrder[]
+  trips      Trip[]
 
   @@index([registrationNumber])
 }
@@ -77,6 +78,41 @@ model Client {
   updatedAt         DateTime @updatedAt
 
   tickets BreakdownTicket[]
+  trips   Trip[]
+}
+
+// One row per trip from meridian_trips.csv, linked to the Vehicle
+// resolved by normalized registration and, when the client name is
+// recognized, to a Client. Storing full rows (not aggregates) means
+// the query interface can cite an exact trip_id — a stronger,
+// checkable citation than a derived summary statistic.
+model Trip {
+  id              String    @id @default(cuid())
+  tripId          String    @unique // trip-153712955898890756 style id from the source CSV
+  createdAtSource DateTime?
+  routeType       String?
+  originCenter    String?
+  originName      String?
+  destCenter      String?
+  destName        String?
+  dispatchTime    DateTime?
+  deliveryTime    DateTime?
+  osrmDistanceKm  Float?
+  osrmTimeMin     Float?
+  actualTimeMin   Float?
+  vehicleRegRaw   String // raw string as it appeared in the CSV, for audit
+  driverId        String?
+  status          String?
+  billedAmount    Float?
+  createdAt       DateTime  @default(now())
+
+  vehicleId String?
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id])
+  clientId  String?
+  client    Client?  @relation(fields: [clientId], references: [id])
+
+  @@index([vehicleId])
+  @@index([clientId])
 }
 
 // A single resolved fact plus its citation and precedence reasoning.
