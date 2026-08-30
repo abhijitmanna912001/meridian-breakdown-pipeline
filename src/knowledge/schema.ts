@@ -44,8 +44,12 @@ export const ExtractedFactSchema = z.object({
       type: z.enum(["CLIENT", "VEHICLE", "DRIVER", "GENERAL"]),
       // canonical name for CLIENT (e.g. "Shakti Cement"), a
       // registration string for VEHICLE (any raw format — normalized
-      // later), a driver_id for DRIVER, or omitted for GENERAL.
-      identifier: z.string().optional(),
+      // later), a driver_id for DRIVER, or omitted/null for GENERAL.
+      // Accepts both — in practice, different LLMs emit either an
+      // absent key or an explicit `null` for "no identifier", and both
+      // mean the same thing here, so both are accepted rather than
+      // rejecting a well-formed extraction over that stylistic choice.
+      identifier: z.string().nullable().optional(),
     })
     .nullable(),
 

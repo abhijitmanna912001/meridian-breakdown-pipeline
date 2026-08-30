@@ -19,12 +19,13 @@
     "setup": "npm install && npm run db:generate && npm run db:migrate"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^2.19.0",
     "@libsql/client": "0.8.1",
     "@prisma/adapter-libsql": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
+    "openai": "^4.77.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

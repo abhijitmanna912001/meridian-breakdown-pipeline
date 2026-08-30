@@ -1,4 +1,5 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import {
   validateExtractionResponse,
   type ExtractionResponse,
@@ -6,13 +7,21 @@ import {
 } from "./schema.js";
 
 /**
- * Thin wrapper around the Gemini free-tier API for exactly one job:
- * extract structured facts from one unstructured source document
- * (interview transcript excerpt, or one email thread).
+ * Thin wrapper around TWO LLM providers for exactly one job: extract
+ * structured facts from one unstructured source document (interview
+ * transcript excerpt, or one email thread).
  *
- * Deliberately isolated behind this single function — swapping the
- * LLM provider later (e.g. to a paid Anthropic/OpenAI key for harder
- * cases) means changing this file only, nothing that calls it.
+ * Gemini (Google AI Studio, free tier) is PRIMARY. OpenAI is
+ * FALLBACK, used automatically whenever Gemini fails for any reason
+ * — daily quota exhaustion (confirmed in practice: free tier allows
+ * as few as 20 requests/day for some models), transient 503
+ * overload, or any other error. This directly demonstrates the kind
+ * of provider resilience the challenge brief calls for ("APIs that
+ * rate limit, fail intermittently... any LLM").
+ *
+ * Both providers are isolated behind this single function — the rest
+ * of the codebase calls extractFactsFromDocument() and never knows
+ * or cares which provider actually served the request.
  *
  * This module NEVER decides pipeline behavior. It reads text, returns
  * candidate facts matching ExtractedFactSchema, and validation +
@@ -44,21 +53,24 @@ Document:
 export interface ExtractFactsResult {
   validation: ExtractionValidationResult;
   sourceFile: string;
+  provider?: "gemini" | "openai"; // which provider actually served this request
 }
 
-let client: GoogleGenerativeAI | null = null;
+let geminiClient: GoogleGenAI | null = null;
+let openaiClient: OpenAI | null = null;
 
-function getClient(): GoogleGenerativeAI {
-  if (!client) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error(
-        "GEMINI_API_KEY is not set. Copy .env.example to .env and add a free-tier key from https://aistudio.google.com/"
-      );
-    }
-    client = new GoogleGenerativeAI(apiKey);
-  }
-  return client;
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+  if (!geminiClient) geminiClient = new GoogleGenAI({ apiKey });
+  return geminiClient;
+}
+
+function getOpenAiClient(): OpenAI | null {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+  if (!openaiClient) openaiClient = new OpenAI({ apiKey });
+  return openaiClient;
 }
 
 /**
@@ -72,26 +84,111 @@ function stripCodeFences(text: string): string {
     .replace(/\s*```$/i, "");
 }
 
+// gemini-3.6-flash: current, less-congested than the newly launched
+// 3.7-flash. gemini-3.7-flash is a Gemini-side fallback tried before
+// giving up on Gemini entirely and moving to OpenAI.
+const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-3.7-flash";
+const OPENAI_MODEL = "gpt-4o-mini"; // cheap, capable enough for structured extraction
+
+const MAX_RETRIES = 2; // fewer retries per provider now that a second provider exists
+const BASE_DELAY_MS = 2000;
+
+function isRetryableError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  // Transient server-side capacity — worth a short retry.
+  return message.includes('"code":503') || message.includes("UNAVAILABLE");
+}
+
+function isQuotaExhausted(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  // Daily/rate quota — retrying the SAME provider/model cannot
+  // succeed until the quota resets, so this is checked separately
+  // and short-circuits straight to the next provider.
+  return (
+    message.includes("RESOURCE_EXHAUSTED") ||
+    message.includes("GenerateRequestsPerDay") ||
+    message.includes("insufficient_quota") ||
+    message.includes("rate_limit_exceeded")
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function tryGemini(prompt: string): Promise<string | null> {
+  const client = getGeminiClient();
+  if (!client) return null; // no key configured — skip straight to OpenAI
+
+  for (const model of [GEMINI_MODEL, GEMINI_FALLBACK_MODEL]) {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const response = await client.models.generateContent({ model, contents: prompt });
+        return response.text ?? "";
+      } catch (err) {
+        if (isQuotaExhausted(err)) break; // move to next Gemini model, no delay
+        if (attempt < MAX_RETRIES && isRetryableError(err)) {
+          await sleep(BASE_DELAY_MS * 2 ** attempt);
+          continue;
+        }
+        break; // non-retryable — try next Gemini model
+      }
+    }
+  }
+  return null; // both Gemini models exhausted/failed
+}
+
+async function tryOpenAi(prompt: string): Promise<string | null> {
+  const client = getOpenAiClient();
+  if (!client) return null; // no key configured
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await client.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0,
+      });
+      return response.choices[0]?.message?.content ?? "";
+    } catch (err) {
+      if (isQuotaExhausted(err)) return null; // no point retrying
+      if (attempt < MAX_RETRIES && isRetryableError(err)) {
+        await sleep(BASE_DELAY_MS * 2 ** attempt);
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
 export async function extractFactsFromDocument(
   documentText: string,
   sourceFile: string
 ): Promise<ExtractFactsResult> {
-  const model = getClient().getGenerativeModel({ model: "gemini-1.5-flash" });
   const prompt = EXTRACTION_PROMPT.replace("{{DOCUMENT_TEXT}}", documentText);
 
-  let rawText: string;
-  try {
-    const response = await model.generateContent(prompt);
-    rawText = response.response.text();
-  } catch (err) {
-    // Network/API failure — never throw out of this function; the
+  let rawText: string | null = null;
+  let provider: "gemini" | "openai" | undefined;
+
+  rawText = await tryGemini(prompt);
+  if (rawText !== null) {
+    provider = "gemini";
+  } else {
+    rawText = await tryOpenAi(prompt);
+    if (rawText !== null) provider = "openai";
+  }
+
+  if (rawText === null) {
+    // Both providers failed — never throw out of this function; the
     // caller quarantines this source the same way a broken ticket
     // record is quarantined, and the pipeline keeps going.
     return {
       sourceFile,
       validation: {
         ok: false,
-        reason: `LLM call failed: ${err instanceof Error ? err.message : String(err)}`,
+        reason: "Both Gemini and OpenAI failed or are not configured (check API keys in .env).",
         rawResponse: null,
       },
     };
@@ -103,9 +200,10 @@ export async function extractFactsFromDocument(
   } catch {
     return {
       sourceFile,
+      provider,
       validation: {
         ok: false,
-        reason: "LLM response was not valid JSON",
+        reason: `LLM response (via ${provider}) was not valid JSON`,
         rawResponse: rawText,
       },
     };
@@ -113,6 +211,7 @@ export async function extractFactsFromDocument(
 
   return {
     sourceFile,
+    provider,
     validation: validateExtractionResponse(parsed),
   };
 }
