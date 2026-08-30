@@ -63,6 +63,74 @@ describe("validateTicket", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("recovers a ticket using camelCase renamed fields (change-tolerance / surprise-file simulation)", () => {
+    // Mirrors the actual reshaped format tried in test-fixtures/surprise_tickets.json
+    const raw = {
+      ticket_id: "TKT-9202",
+      createdAt: "2026-08-26T11:00:00",
+      vehicleRegistration: "CH40IK6238",
+      driverId: "DRV-031",
+      originHub: "Chandigarh",
+      kmFromOriginHub: 18,
+      destination: "Rudrapur",
+      issue: "clutch slipping",
+      severity: "MEDIUM",
+      client: "Apex Chemicals",
+      status: "OPEN",
+    };
+
+    const result = validateTicket(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.ticket.vehicle).toBe("CH40IK6238");
+      expect(result.ticket.driver_id).toBe("DRV-031");
+      expect(result.ticket.origin_hub).toBe("Chandigarh");
+      expect(result.ticket.km_from_origin_hub).toBe(18);
+    }
+  });
+
+  it("does not let an aliased field overwrite an already-present canonical field", () => {
+    const raw = {
+      ticket_id: "TKT-9205",
+      created_at: "2026-08-26T11:00:00",
+      createdAt: "SHOULD_NOT_WIN",
+      vehicle: "CH40IK6238",
+      driver_id: "DRV-031",
+      origin_hub: "Chandigarh",
+      km_from_origin_hub: 18,
+      destination: "Rudrapur",
+      issue: "clutch slipping",
+      severity: "MEDIUM",
+      client: "Apex Chemicals",
+      status: "OPEN",
+    };
+
+    const result = validateTicket(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.ticket.created_at).toBe("2026-08-26T11:00:00");
+    }
+  });
+
+  it("still quarantines a record with a genuinely non-numeric km value, even after alias mapping", () => {
+    const raw = {
+      ticket_id: "TKT-9203",
+      created_at: "2026-08-27T09:00:00",
+      vehicle: "",
+      driver_id: "DRV-999",
+      origin_hub: "Delhi",
+      km_from_origin_hub: "unknown",
+      destination: "Jaipur",
+      issue: "engine failure",
+      severity: "CRITICAL",
+      client: "Orion Pharma",
+      status: "OPEN",
+    };
+
+    const result = validateTicket(raw);
+    expect(result.ok).toBe(false);
+  });
+
   it("never throws on completely malformed input", () => {
     expect(() => validateTicket(null)).not.toThrow();
     expect(() => validateTicket(undefined)).not.toThrow();

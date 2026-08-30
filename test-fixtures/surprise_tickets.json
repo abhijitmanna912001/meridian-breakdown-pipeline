@@ -1,0 +1,73 @@
+[
+  {
+    "ticket_id": "TKT-9201",
+    "created_at": "2026-08-25T10:00:00",
+    "vehicle": "HR16SP9238",
+    "driver_id": "DRV-010",
+    "origin_hub": "Gurgaon",
+    "km_from_origin_hub": 15,
+    "destination": "Kanpur",
+    "issue": "brake failure warning",
+    "severity": "HIGH",
+    "client": "Shakti Cement",
+    "status": "OPEN",
+    "resolution_note": ""
+  },
+  {
+    "ticket_id": "TKT-9202",
+    "createdAt": "2026-08-26T11:00:00",
+    "vehicleRegistration": "CH40IK6238",
+    "driverId": "DRV-031",
+    "originHub": "Chandigarh",
+    "kmFromOriginHub": 18,
+    "destination": "Rudrapur",
+    "issue": "clutch slipping",
+    "severity": "MEDIUM",
+    "client": "Apex Chemicals",
+    "status": "OPEN",
+    "resolution_note": ""
+  },
+  {
+    "ticket_id": "TKT-9201",
+    "created_at": "2026-08-25T10:00:00",
+    "vehicle": "HR16SP9238",
+    "driver_id": "DRV-010",
+    "origin_hub": "Gurgaon",
+    "km_from_origin_hub": 15,
+    "destination": "Kanpur",
+    "issue": "brake failure warning",
+    "severity": "HIGH",
+    "client": "Shakti Cement",
+    "status": "OPEN",
+    "resolution_note": "(sync copy)"
+  },
+  {
+    "ticket_id": "TKT-9203",
+    "created_at": "2026-08-27T09:00:00",
+    "vehicle": "",
+    "driver_id": "DRV-999",
+    "origin_hub": "Delhi",
+    "km_from_origin_hub": "unknown",
+    "destination": "Jaipur",
+    "issue": "engine failure",
+    "severity": "CRITICAL",
+    "client": "Orion Pharma",
+    "status": "OPEN",
+    "resolution_note": ""
+  },
+  {
+    "ticket_id": "TKT-9204",
+    "created_at": "2026-08-28T14:30:00",
+    "vehicle": "UP53YM5558",
+    "driver_id": "DRV-042",
+    "origin_hub": "Lucknow",
+    "km_from_origin_hub": 60,
+    "destination": "Ludhiana",
+    "issue": "tyre burst",
+    "severity": "LOW",
+    "client": "Vertex Retail",
+    "status": "OPEN",
+    "resolution_note": "",
+    "priority_flag": true
+  }
+]
