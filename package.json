@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "ingest": "tsx src/ingest/run.ts",
+    "extract-knowledge": "tsx src/knowledge/run.ts",
     "pipeline": "tsx src/pipeline/run.ts",
     "query": "tsx src/query/cli.ts",
     "test": "vitest run",
